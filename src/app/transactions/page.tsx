@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { ensureSession } from '@/lib/session'
 import { formatCurrency, formatDate } from '@/lib/constants'
 import TransactionForm from '@/components/transactions/TransactionForm'
 import { Plus, Search, Trash2 } from 'lucide-react'
@@ -21,39 +22,31 @@ export default function TransactionsPage() {
   const supabase = createClient()
 
   const loadData = useCallback(async () => {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { data: membership } = await supabase
-      .from('family_members')
-      .select('id, family_id')
-      .eq('user_id', user.id)
-      .single()
-
-    if (!membership) {
+    const session = await ensureSession()
+    if (!session) {
       setLoading(false)
       return
     }
 
-    setFamilyId(membership.family_id)
-    setCurrentMemberId(membership.id)
+    setFamilyId(session.familyId)
+    setCurrentMemberId(session.memberId)
 
     const [txRes, catRes, memRes] = await Promise.all([
       supabase
         .from('transactions')
         .select('*, category:categories(*), member:family_members(*)')
-        .eq('family_id', membership.family_id)
+        .eq('family_id', session.familyId)
         .order('date', { ascending: false })
         .limit(100),
       supabase
         .from('categories')
         .select('*')
-        .eq('family_id', membership.family_id)
+        .eq('family_id', session.familyId)
         .order('name'),
       supabase
         .from('family_members')
         .select('*')
-        .eq('family_id', membership.family_id),
+        .eq('family_id', session.familyId),
     ])
 
     if (txRes.data) setTransactions(txRes.data as Transaction[])
@@ -111,7 +104,7 @@ export default function TransactionsPage() {
 
       {!familyId ? (
         <p className="text-text-muted text-center py-12">
-          Configure um grupo familiar primeiro.
+          Erro ao carregar. Recarregue a pagina.
         </p>
       ) : (
         <>

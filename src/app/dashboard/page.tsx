@@ -1,4 +1,8 @@
-import { createClient } from '@/lib/supabase/server'
+'use client'
+
+import { useEffect, useState, useCallback } from 'react'
+import { createClient } from '@/lib/supabase/client'
+import { ensureSession } from '@/lib/session'
 import SummaryCards from '@/components/dashboard/SummaryCards'
 import CategoryChart from '@/components/dashboard/CategoryChart'
 import RecentTransactions from '@/components/dashboard/RecentTransactions'
@@ -7,49 +11,55 @@ import Link from 'next/link'
 import { Plus } from 'lucide-react'
 import type { CategorySummary, Transaction } from '@/types/database'
 
-export default async function DashboardPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+export default function DashboardPage() {
+  const [loading, setLoading] = useState(true)
+  const [familyId, setFamilyId] = useState<string | null>(null)
+  const [income, setIncome] = useState(0)
+  const [expenses, setExpenses] = useState(0)
+  const [categorySummary, setCategorySummary] = useState<CategorySummary[]>([])
+  const [recentTransactions, setRecentTransactions] = useState<Transaction[]>([])
 
-  if (!user) return null
+  const supabase = createClient()
 
-  // Get user's family membership
-  const { data: membership } = await supabase
-    .from('family_members')
-    .select('family_id')
-    .eq('user_id', user.id)
-    .single()
+  const loadData = useCallback(async () => {
+    // Garante sessão anônima + família
+    const session = await ensureSession()
+    if (!session) {
+      setLoading(false)
+      return
+    }
 
-  const familyId = membership?.family_id
+    setFamilyId(session.familyId)
 
-  // Dates for current month
-  const now = new Date()
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
-  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0]
+    // Dates for current month
+    const now = new Date()
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+      .toISOString()
+      .split('T')[0]
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+      .toISOString()
+      .split('T')[0]
 
-  let income = 0
-  let expenses = 0
-  let categorySummary: CategorySummary[] = []
-  let recentTransactions: Transaction[] = []
-
-  if (familyId) {
     // Get transactions for current month
     const { data: transactions } = await supabase
       .from('transactions')
       .select('*, category:categories(*), member:family_members(*)')
-      .eq('family_id', familyId)
+      .eq('family_id', session.familyId)
       .gte('date', startOfMonth)
       .lte('date', endOfMonth)
       .order('date', { ascending: false })
 
     if (transactions) {
-      income = transactions
+      const inc = transactions
         .filter((t) => t.type === 'income')
         .reduce((sum, t) => sum + Number(t.amount), 0)
 
-      expenses = transactions
+      const exp = transactions
         .filter((t) => t.type === 'expense')
         .reduce((sum, t) => sum + Number(t.amount), 0)
+
+      setIncome(inc)
+      setExpenses(exp)
 
       // Group by category for expense chart
       const categoryMap = new Map<string, CategorySummary>()
@@ -73,14 +83,34 @@ export default async function DashboardPage() {
           }
         })
 
-      categorySummary = Array.from(categoryMap.values())
-      const totalExpenses = categorySummary.reduce((s, c) => s + c.total, 0)
-      categorySummary = categorySummary
-        .map((c) => ({ ...c, percentage: totalExpenses > 0 ? (c.total / totalExpenses) * 100 : 0 }))
+      let summary = Array.from(categoryMap.values())
+      const totalExpenses = summary.reduce((s, c) => s + c.total, 0)
+      summary = summary
+        .map((c) => ({
+          ...c,
+          percentage: totalExpenses > 0 ? (c.total / totalExpenses) * 100 : 0,
+        }))
         .sort((a, b) => b.total - a.total)
 
-      recentTransactions = (transactions as Transaction[]).slice(0, 5)
+      setCategorySummary(summary)
+      setRecentTransactions((transactions as Transaction[]).slice(0, 5))
     }
+
+    setLoading(false)
+  }, [supabase])
+
+  useEffect(() => {
+    loadData()
+  }, [loadData])
+
+  const now = new Date()
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+      </div>
+    )
   }
 
   return (
@@ -104,16 +134,10 @@ export default async function DashboardPage() {
 
       {!familyId ? (
         <div className="bg-bg-card border border-border rounded-2xl p-8 text-center space-y-4">
-          <h2 className="text-xl font-semibold">Bem-vindo ao Controle de Financas!</h2>
+          <h2 className="text-xl font-semibold">Erro ao carregar</h2>
           <p className="text-text-secondary">
-            Crie ou entre em um grupo familiar para comecar a controlar seus gastos.
+            Nao foi possivel criar a sessao. Recarregue a pagina.
           </p>
-          <Link
-            href="/family"
-            className="inline-flex items-center gap-2 bg-primary hover:bg-primary-dark text-white font-medium py-2.5 px-5 rounded-xl transition-colors"
-          >
-            Configurar Familia
-          </Link>
         </div>
       ) : (
         <>

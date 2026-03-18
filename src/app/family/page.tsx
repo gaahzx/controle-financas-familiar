@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Users, Copy, Check, UserPlus, Crown, LogIn } from 'lucide-react'
+import { ensureSession } from '@/lib/session'
+import { Copy, Check, Crown, Pencil } from 'lucide-react'
 import type { Family, FamilyMember } from '@/types/database'
 
 export default function FamilyPage() {
@@ -10,39 +11,36 @@ export default function FamilyPage() {
   const [members, setMembers] = useState<FamilyMember[]>([])
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(false)
-
-  // Create family form
-  const [showCreate, setShowCreate] = useState(false)
+  const [editing, setEditing] = useState(false)
   const [familyName, setFamilyName] = useState('')
   const [nickname, setNickname] = useState('')
-  const [creating, setCreating] = useState(false)
-
-  // Join family form
-  const [showJoin, setShowJoin] = useState(false)
-  const [inviteCode, setInviteCode] = useState('')
-  const [joinNickname, setJoinNickname] = useState('')
-  const [joining, setJoining] = useState(false)
-  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [sessionUserId, setSessionUserId] = useState('')
 
   const supabase = createClient()
 
   const loadFamily = useCallback(async () => {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
+    const session = await ensureSession()
+    if (!session) {
+      setLoading(false)
+      return
+    }
 
-    const { data: membership } = await supabase
-      .from('family_members')
-      .select('family_id')
-      .eq('user_id', user.id)
-      .single()
+    setSessionUserId(session.userId)
 
-    if (membership) {
-      const [famRes, memRes] = await Promise.all([
-        supabase.from('families').select('*').eq('id', membership.family_id).single(),
-        supabase.from('family_members').select('*').eq('family_id', membership.family_id),
-      ])
-      if (famRes.data) setFamily(famRes.data)
-      if (memRes.data) setMembers(memRes.data)
+    const [famRes, memRes] = await Promise.all([
+      supabase.from('families').select('*').eq('id', session.familyId).single(),
+      supabase.from('family_members').select('*').eq('family_id', session.familyId),
+    ])
+
+    if (famRes.data) {
+      setFamily(famRes.data)
+      setFamilyName(famRes.data.name)
+    }
+    if (memRes.data) {
+      setMembers(memRes.data)
+      const me = memRes.data.find((m) => m.user_id === session.userId)
+      if (me) setNickname(me.nickname)
     }
     setLoading(false)
   }, [supabase])
@@ -51,62 +49,26 @@ export default function FamilyPage() {
     loadFamily()
   }, [loadFamily])
 
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault()
-    setCreating(true)
-    setError('')
+  async function handleSave() {
+    if (!family) return
+    setSaving(true)
 
-    const { error: rpcError } = await supabase.rpc('create_family_with_defaults', {
-      p_name: familyName,
-      p_nickname: nickname,
-    })
-
-    if (rpcError) {
-      setError(rpcError.message)
-      setCreating(false)
-      return
-    }
-
-    window.location.reload()
-  }
-
-  async function handleJoin(e: React.FormEvent) {
-    e.preventDefault()
-    setJoining(true)
-    setError('')
-
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-
-    // Find family by invite code
-    const { data: fam } = await supabase
+    await supabase
       .from('families')
-      .select('id')
-      .eq('invite_code', inviteCode.trim())
-      .single()
+      .update({ name: familyName })
+      .eq('id', family.id)
 
-    if (!fam) {
-      setError('Codigo de convite invalido')
-      setJoining(false)
-      return
+    if (sessionUserId) {
+      await supabase
+        .from('family_members')
+        .update({ nickname })
+        .eq('user_id', sessionUserId)
+        .eq('family_id', family.id)
     }
 
-    const { error: insertError } = await supabase.from('family_members').insert({
-      family_id: fam.id,
-      user_id: user.id,
-      nickname: joinNickname,
-      role: 'member',
-    })
-
-    if (insertError) {
-      setError(insertError.message.includes('duplicate')
-        ? 'Voce ja faz parte desta familia'
-        : insertError.message)
-      setJoining(false)
-      return
-    }
-
-    window.location.reload()
+    setSaving(false)
+    setEditing(false)
+    loadFamily()
   }
 
   function copyInviteCode() {
@@ -125,112 +87,53 @@ export default function FamilyPage() {
     )
   }
 
-  // No family — show create/join options
   if (!family) {
     return (
-      <div className="max-w-lg mx-auto space-y-6 pt-12">
-        <div className="text-center space-y-2">
-          <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto">
-            <Users className="w-8 h-8 text-primary-light" />
-          </div>
-          <h1 className="text-2xl font-bold">Grupo Familiar</h1>
-          <p className="text-text-secondary">
-            Crie um novo grupo ou entre com um codigo de convite
-          </p>
-        </div>
-
-        {error && (
-          <div className="bg-danger/10 border border-danger/30 rounded-xl p-3 text-danger text-sm">
-            {error}
-          </div>
-        )}
-
-        {/* Create family */}
-        <div className="bg-bg-card border border-border rounded-2xl p-6 space-y-4">
-          <button
-            onClick={() => { setShowCreate(!showCreate); setShowJoin(false) }}
-            className="flex items-center gap-3 w-full text-left"
-          >
-            <UserPlus className="w-5 h-5 text-primary-light" />
-            <span className="font-medium">Criar novo grupo familiar</span>
-          </button>
-
-          {showCreate && (
-            <form onSubmit={handleCreate} className="space-y-3 pt-2">
-              <input
-                type="text"
-                value={familyName}
-                onChange={(e) => setFamilyName(e.target.value)}
-                placeholder="Nome da familia (ex: Familia Silva)"
-                required
-                className="w-full px-4 py-3 bg-bg-input border border-border rounded-xl text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-              <input
-                type="text"
-                value={nickname}
-                onChange={(e) => setNickname(e.target.value)}
-                placeholder="Seu apelido (ex: Gabriel)"
-                required
-                className="w-full px-4 py-3 bg-bg-input border border-border rounded-xl text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-              <button
-                type="submit"
-                disabled={creating}
-                className="w-full py-3 bg-primary hover:bg-primary-dark text-white font-medium rounded-xl transition-colors disabled:opacity-50"
-              >
-                {creating ? 'Criando...' : 'Criar Grupo'}
-              </button>
-            </form>
-          )}
-        </div>
-
-        {/* Join family */}
-        <div className="bg-bg-card border border-border rounded-2xl p-6 space-y-4">
-          <button
-            onClick={() => { setShowJoin(!showJoin); setShowCreate(false) }}
-            className="flex items-center gap-3 w-full text-left"
-          >
-            <LogIn className="w-5 h-5 text-success" />
-            <span className="font-medium">Entrar com codigo de convite</span>
-          </button>
-
-          {showJoin && (
-            <form onSubmit={handleJoin} className="space-y-3 pt-2">
-              <input
-                type="text"
-                value={inviteCode}
-                onChange={(e) => setInviteCode(e.target.value)}
-                placeholder="Codigo de convite (8 caracteres)"
-                required
-                maxLength={8}
-                className="w-full px-4 py-3 bg-bg-input border border-border rounded-xl text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary text-center tracking-widest font-mono text-lg"
-              />
-              <input
-                type="text"
-                value={joinNickname}
-                onChange={(e) => setJoinNickname(e.target.value)}
-                placeholder="Seu apelido"
-                required
-                className="w-full px-4 py-3 bg-bg-input border border-border rounded-xl text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-              <button
-                type="submit"
-                disabled={joining}
-                className="w-full py-3 bg-success hover:bg-success/90 text-white font-medium rounded-xl transition-colors disabled:opacity-50"
-              >
-                {joining ? 'Entrando...' : 'Entrar no Grupo'}
-              </button>
-            </form>
-          )}
-        </div>
+      <div className="text-center py-12">
+        <p className="text-text-muted">Erro ao carregar familia. Recarregue a pagina.</p>
       </div>
     )
   }
 
-  // Has family — show members and invite code
   return (
     <div className="max-w-2xl space-y-6">
-      <h1 className="text-2xl font-bold">{family.name}</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">{family.name}</h1>
+        <button
+          onClick={() => setEditing(!editing)}
+          className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+        >
+          <Pencil className="w-4 h-4 text-text-secondary" />
+        </button>
+      </div>
+
+      {/* Edit form */}
+      {editing && (
+        <div className="bg-bg-card border border-border rounded-2xl p-6 space-y-4">
+          <h3 className="text-sm font-medium text-text-secondary">Editar</h3>
+          <input
+            type="text"
+            value={familyName}
+            onChange={(e) => setFamilyName(e.target.value)}
+            placeholder="Nome da familia"
+            className="w-full px-4 py-3 bg-bg-input border border-border rounded-xl text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+          <input
+            type="text"
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
+            placeholder="Seu apelido"
+            className="w-full px-4 py-3 bg-bg-input border border-border rounded-xl text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="w-full py-3 bg-primary hover:bg-primary-dark text-white font-medium rounded-xl transition-colors disabled:opacity-50"
+          >
+            {saving ? 'Salvando...' : 'Salvar'}
+          </button>
+        </div>
+      )}
 
       {/* Invite code */}
       <div className="bg-bg-card border border-border rounded-2xl p-6">
